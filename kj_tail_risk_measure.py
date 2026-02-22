@@ -130,7 +130,7 @@ class TailRiskAnalyzer:
         colors = ['blue' if x < 0 else 'red' for x in self.tail_betas.values]
         self.tail_betas.plot(kind='bar', color=colors, ax=ax2)
         ax2.set_title("Predictive Tail Risk Exposure (beta_i)", fontsize=14)
-        ax2.set_ylabel("Beta Loading on $\lambda_t$")
+        ax2.set_ylabel("Beta Loading on lambda_t")
         ax2.axhline(0, color='black', lw=1)
 
         plt.tight_layout()
@@ -150,10 +150,10 @@ if __name__ == "__main__":
     ]
 
     # Step 1: Data Fetching
-    daily_rets, mkt_rets = fetch_financial_data(tickers)
+    daily_returns, mkt_returns = fetch_financial_data(tickers)
 
     # Step 2: Analysis Class instantiation
-    analyzer = TailRiskAnalyzer(daily_rets, mkt_rets)
+    analyzer = TailRiskAnalyzer(daily_returns, mkt_returns)
 
     # Step 3: Run full pipeline
     analyzer.estimate_lambda()  # This will auto-trigger residuals
