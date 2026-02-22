@@ -2,136 +2,162 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.linear_model import LinearRegression
 
 
-class TailRiskMeasure:
+# 1. DATA RETRIEVAL LOGIC (Independent Function)
+def fetch_financial_data(tickers, market_ticker='SPY', period='5y'):
     """
-    Implementation of the Kelly and Jiang (2014) Dynamic Tail Risk Measure.
-    Estimates common tail risk (lambda) from a cross-section of returns.
+    Fetches daily price data and returns two DataFrames of daily returns.
+    The index is dates, columns are stock tickers.
+    """
+    print(f"Downloading daily data for {len(tickers)} stocks and market proxy...")
+    raw_data = yf.download(tickers, period=period)['Close']
+    market_data = yf.download(market_ticker, period=period)['Close']
+
+    # Calculate daily returns as required for the Hill estimator (KJ 2014, Sec 2.1)
+    daily_stock_returns = raw_data.pct_change().dropna(how='all')
+    daily_market_returns = market_data.pct_change().dropna()
+
+    return daily_stock_returns, daily_market_returns
+
+
+# 2. ANALYTICAL CLASS: Kelly-Jiang Tail Risk
+class TailRiskAnalyzer:
+    """
+    Implements construction of lambda_t (tail risk) and beta_i (tail sensitivity).
+    Reference: Kelly and Jiang (2014), 'Tail Risk and Asset Prices'.
     """
 
-    def __init__(self, tickers, market_ticker='SPY', period='5y'):
-        self.tickers = tickers
-        self.market_ticker = market_ticker
-        self.period = period
-        self.returns = None
-        self.market_returns = None
-        self.residuals = None
+    def __init__(self, stock_returns, market_returns):
+        self.stock_returns = stock_returns
+        self.market_returns = market_returns
+        self.daily_residuals = None
         self.kj_lambda = None
+        self.tail_betas = None
 
-    def fetch_data(self):
-        """Downloads historical price data and calculates daily returns."""
-        print(f"Downloading data for {len(self.tickers)} tickers...")
-        data = yf.download(self.tickers, period=self.period)['Close']
-        self.market_returns = yf.download(self.market_ticker, period=self.period)['Close'].pct_change().dropna()
-        self.returns = data.pct_change().dropna()
-        return self
-
-    def residualize_returns(self):
+    def calculate_residuals(self):
         """
-        Removes common factors to isolate firm-level shocks[cite: 173, 174].
-        Uses a simple market-beta residualization as a proxy for Fama-French.
+        Removes common factors from daily returns using OLS (KJ 2014, Sec 1.2).
+        This isolates firm-specific tail events from general market volatility.
         """
-        if self.returns is None:
-            raise ValueError("Data not fetched. Run fetch_data() first.")
-
-        print("Residualizing returns to isolate idiosyncratic tail events...")
-        self.residuals = pd.DataFrame(index=self.returns.index, columns=self.returns.columns)
-
-        # Align market and stock indices
-        common_idx = self.returns.index.intersection(self.market_returns.index)
+        print("Residualizing daily returns...")
+        # Align indices
+        common_idx = self.stock_returns.index.intersection(self.market_returns.index)
         X = self.market_returns.loc[common_idx].values.reshape(-1, 1)
 
-        for ticker in self.tickers:
-            y = self.returns.loc[common_idx, ticker].values.reshape(-1, 1)
-            model = LinearRegression().fit(X, y)
-            self.residuals.loc[common_idx, ticker] = (y - model.predict(X)).flatten()
+        res_df = pd.DataFrame(index=common_idx, columns=self.stock_returns.columns)
+        for ticker in self.stock_returns.columns:
+            y = self.stock_returns.loc[common_idx, ticker].values.reshape(-1, 1)
+            # Mask NaNs for specific ticker availability
+            mask = ~np.isnan(y).flatten()
+            if mask.any():
+                model = LinearRegression().fit(X[mask], y[mask])
+                res_df.loc[common_idx[mask], ticker] = (y[mask] - model.predict(X[mask])).flatten()
+
+        self.daily_residuals = res_df.astype(float)
         return self
 
-    def calculate_lambda(self, threshold_quantile=0.05):
+    def estimate_lambda(self, quantile=0.05):
         """
-        Calculates the monthly tail risk measure lambda using the Hill estimator[cite: 138, 143].
-        Pooled cross-sectional returns below the 5th percentile are used[cite: 146, 158].
+        Applies Hill's power law estimator to pooled cross-sectional daily residuals.
+        Estimated at a monthly frequency (KJ 2014, Sec 1.1).
         """
-        print(f"Calculating lambda using {threshold_quantile * 100}% threshold...")
-        lambda_results = {}
+        if self.daily_residuals is None:
+            self.calculate_residuals()
 
-        # Group by month (KJ 2014, Section 1.1) [cite: 138]
-        for month, group in self.residuals.groupby(pd.Grouper(freq='ME')):
-            pooled = group.values.flatten().astype(float)
+        lambda_results = {}
+        # Pool all firm-level daily returns within each month (KJ 2014, Sec 2.1)
+        for month, group in self.daily_residuals.groupby(pd.Grouper(freq='ME')):
+            pooled = group.values.flatten()
             pooled = pooled[~np.isnan(pooled)]
 
-            # Define threshold u_t as the specified percentile [cite: 146]
-            u_t = np.percentile(pooled, threshold_quantile * 100)
+            if len(pooled) < 20: continue  # Ensure sufficient cross-section
 
-            # Identify u-exceedences [cite: 147]
+            # Threshold u_t is the 5th percentile (KJ 2014, Sec 1.1)
+            u_t = np.percentile(pooled, quantile * 100)
+
+            # Exceedences: values below the threshold (absolute value used for Hill ratio)
             exceedences = pooled[pooled < u_t]
 
             if len(exceedences) > 0:
-                # Hill Estimator Formula [cite: 141, 143]
-                # lambda_t = (1/K) * sum(ln(R_k / u_t))
-                hill_val = np.mean(np.log(np.abs(exceedences) / np.abs(u_t)))
-                lambda_results[month] = hill_val
+                # Equation (2): Lambda_t is the average log-ratio
+                # higher lambda = fatter tails
+                lambda_val = np.mean(np.log(np.abs(exceedences) / np.abs(u_t)))
+                lambda_results[month] = lambda_val
 
         self.kj_lambda = pd.Series(lambda_results)
         return self.kj_lambda
 
-    def get_tail_betas(self):
+    def calculate_tail_betas(self, lookback_months=36):
         """
-        Estimates the sensitivity (beta) of each stock to the aggregate tail risk[cite: 367, 368].
+        Estimates the sensitivity of each stock to the aggregate tail risk factor.
+        Regresses monthly returns on lagged lambda (KJ 2014, Sec 2.3).
         """
+        if self.kj_lambda is None:
+            self.estimate_lambda()
+
+        print("Estimating cross-sectional tail betas...")
         betas = {}
-        # Use lagged lambda to predict returns (Section 2.3) [cite: 367, 384]
+        # Lag lambda to test predictive power (KJ 2014, Sec 2.3)
         lagged_lambda = self.kj_lambda.shift(1).dropna()
 
-        for ticker in self.tickers:
-            monthly_rets = self.returns[ticker].resample('ME').mean().loc[lagged_lambda.index]
-            common = monthly_rets.index.intersection(lagged_lambda.index)
+        for ticker in self.stock_returns.columns:
+            # Resample stock returns to monthly frequency for beta calculation
+            monthly_stock_rets = self.stock_returns[ticker].resample('ME').apply(lambda x: (1 + x).prod() - 1)
+            common = monthly_stock_rets.index.intersection(lagged_lambda.index)
 
-            if len(common) > 12:
+            if len(common) >= lookback_months:
                 X = lagged_lambda.loc[common].values.reshape(-1, 1)
-                y = monthly_rets.loc[common].values
+                y = monthly_stock_rets.loc[common].values
                 model = LinearRegression().fit(X, y)
                 betas[ticker] = model.coef_[0]
 
-        return pd.Series(betas).sort_values()
+        self.tail_betas = pd.Series(betas).sort_values()
+        return self.tail_betas
 
-    def plot_results(self):
-        """Visualizes the aggregate tail risk and cross-sectional sensitivities."""
-        plt.figure(figsize=(12, 10))
+    def plot_analysis(self):
+        """Generates visualizations for the measure and asset sensitivities."""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
 
-        # Plot 1: Common Tail Risk (Lambda) [cite: 224]
-        plt.subplot(2, 1, 1)
-        plt.plot(self.kj_lambda.index, self.kj_lambda.values, color='firebrick', lw=2)
-        plt.title("Aggregate Tail Risk lambda over Time", fontsize=14)
-        plt.ylabel("Tail Exponent Value")
-        plt.grid(True, linestyle='--', alpha=0.6)
+        # Plot Lambda Time Series
+        ax1.plot(self.kj_lambda.index, self.kj_lambda.values, color='darkred', lw=2)
+        ax1.set_title("Estimated Common Tail Risk (lambda_t)", fontsize=14)
+        ax1.set_ylabel("Tail Exponent Value")
+        ax1.grid(alpha=0.3)
 
-        # Plot 2: Tail Betas [cite: 390]
-        plt.subplot(2, 1, 2)
-        betas = self.get_tail_betas()
-        colors = ['navy' if x < 0 else 'darkred' for x in betas.values]
-        betas.plot(kind='bar', color=colors)
-        plt.title("Asset Sensitivity to Tail Risk beta_i)", fontsize=14)
-        plt.ylabel("Tail Beta Loading")
-        plt.axhline(0, color='black', linewidth=0.8)
+        # Plot Tail Betas
+        colors = ['blue' if x < 0 else 'red' for x in self.tail_betas.values]
+        self.tail_betas.plot(kind='bar', color=colors, ax=ax2)
+        ax2.set_title("Predictive Tail Risk Exposure (beta_i)", fontsize=14)
+        ax2.set_ylabel("Beta Loading on $\lambda_t$")
+        ax2.axhline(0, color='black', lw=1)
 
         plt.tight_layout()
         plt.show()
 
 
-# --- EXECUTION ---
+# 3. EXECUTION FLOW
 if __name__ == "__main__":
+    # Define Mag7 + others for a robust cross-section (total 40)
     tickers = [
         'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-        'JPM', 'V', 'MA', 'BAC', 'GS', 'LLY', 'JNJ', 'PFE', 'WMT',
-        'PG', 'KO', 'DIS', 'NFLX', 'XOM', 'CVX', 'AVGO', 'AMD',
-        'ORCL', 'CRM', 'INTC', 'BRK-B', 'HD', 'MCD', 'CAT', 'GE',
-        'BA', 'T', 'VZ', 'CSCO', 'ABT', 'PEP', 'COST', 'MRK'
+        'JPM', 'V', 'MA', 'BAC', 'GS', 'MS', 'WFC', 'C',
+        'LLY', 'JNJ', 'PFE', 'ABBV', 'MRK', 'TMO', 'UNH',
+        'WMT', 'PG', 'KO', 'PEP', 'COST', 'T', 'VZ',
+        'DIS', 'NFLX', 'XOM', 'CVX', 'AVGO', 'AMD', 'ORCL', 'CRM',
+        'INTC', 'HD', 'BA'
     ]
 
-    measure = TailRiskMeasure(tickers=tickers, market_ticker='SPY', period='5y')
-    measure.fetch_data().residualize_returns().calculate_lambda()
-    measure.plot_results()
+    # Step 1: Data Fetching
+    daily_rets, mkt_rets = fetch_financial_data(tickers)
+
+    # Step 2: Analysis Class instantiation
+    analyzer = TailRiskAnalyzer(daily_rets, mkt_rets)
+
+    # Step 3: Run full pipeline
+    analyzer.estimate_lambda()  # This will auto-trigger residuals
+    analyzer.calculate_tail_betas()
+
+    # Step 4: Visualize results
+    analyzer.plot_analysis()
