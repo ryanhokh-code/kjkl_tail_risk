@@ -97,14 +97,24 @@ def main():
         bt_eval.fetch_data()
         bt_eval.generate_signals()
         
-        kj_ret, kj_vol = bt_eval.run_regressions('KJ_Lambda')
+        kj_ret, kj_vol, kj_dd = bt_eval.run_regressions('KJ_Lambda')
+        kj_hit = bt_eval.compute_hit_rates('KJ_Lambda')
         kl_ret_str = "Skipped"
         kl_vol_str = "Skipped"
-        
+        kl_dd_str = "Skipped"
+        kl_hit_str = "Skipped"
+        kl_ret = pd.DataFrame()
+        kl_vol = pd.DataFrame()
+        kl_dd = pd.DataFrame()
+        kl_hit = pd.DataFrame()
+
         if not args.skip_kl:
-            kl_ret, kl_vol = bt_eval.run_regressions('KL_MEES')
-            kl_ret_str = kl_ret.to_markdown()
-            kl_vol_str = kl_vol.to_markdown()
+            kl_ret, kl_vol, kl_dd = bt_eval.run_regressions('KL_MEES')
+            kl_hit = bt_eval.compute_hit_rates('KL_MEES')
+            kl_ret_str = kl_ret.to_markdown() if not kl_ret.empty else "N/A"
+            kl_vol_str = kl_vol.to_markdown() if not kl_vol.empty else "N/A"
+            kl_dd_str = kl_dd.to_markdown() if not kl_dd.empty else "N/A"
+            kl_hit_str = kl_hit.to_markdown() if not kl_hit.empty else "N/A"
         
         # Save plots specific to market
         plot_path = f"export_img/daily_tail_risk_{market.replace('^', '')}.png"
@@ -120,16 +130,24 @@ def main():
             
         report_lines.append(f"\n### KJ Lambda Predictive Significance (Level + Velocity Multivariate Model)")
         report_lines.append("**Predicting Future Market Returns:**")
-        report_lines.append(kj_ret.to_markdown())
-        report_lines.append("\n**Predicting Future Market Volatility:**")
-        report_lines.append(kj_vol.to_markdown())
+        report_lines.append(kj_ret.to_markdown() if not kj_ret.empty else "N/A")
+        report_lines.append("\n**Predicting Future Market Volatility Ratio:**")
+        report_lines.append(kj_vol.to_markdown() if not kj_vol.empty else "N/A")
+        report_lines.append("\n**Predicting Future Max Drawdown:**")
+        report_lines.append(kj_dd.to_markdown() if not kj_dd.empty else "N/A")
+        report_lines.append("\n**Hit Rate Analysis (KJ Lambda > 90th Pct):**")
+        report_lines.append(kj_hit.to_markdown() if not kj_hit.empty else "N/A")
         
         if not args.skip_kl:
             report_lines.append(f"\n### KL MEES Predictive Significance (Level + Velocity Multivariate Model)")
             report_lines.append("**Predicting Future Market Returns:**")
             report_lines.append(kl_ret_str)
-            report_lines.append("\n**Predicting Future Market Volatility:**")
+            report_lines.append("\n**Predicting Future Market Volatility Ratio:**")
             report_lines.append(kl_vol_str)
+            report_lines.append("\n**Predicting Future Max Drawdown:**")
+            report_lines.append(kl_dd_str)
+            report_lines.append("\n**Hit Rate Analysis (KL MEES > 90th Pct):**")
+            report_lines.append(kl_hit_str)
 
         report_lines.append(f"\n![{market_name} Tail Risk Prediction Plot]({os.path.abspath(plot_path)})\n")
         report_lines.append("---\n")
@@ -166,16 +184,28 @@ def main():
 
         html_lines.append("<h3>KJ Lambda Predictive Significance</h3>")
         html_lines.append("<h4>Predicting Future Market Returns (Joint Level + Momentum Model)</h4>")
-        html_lines.append(kj_ret.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}"))
-        html_lines.append("<h4>Predicting Future Market Volatility (Joint Level + Momentum Model)</h4>")
-        html_lines.append(kj_vol.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}"))
+        html_lines.append(kj_ret.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kj_ret.empty else "<p>N/A</p>")
+        html_lines.append("<h4>Predicting Future Market Volatility Ratio (Joint Level + Momentum Model)</h4>")
+        html_lines.append(kj_vol.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kj_vol.empty else "<p>N/A</p>")
+        html_lines.append("<h4>Predicting Future Max Drawdown (Joint Level + Momentum Model)</h4>")
+        html_lines.append("<p><em>A negative Beta and significant t-stat indicates that when the KJ signal is high, the subsequent intra-period trough is materially deeper.</em></p>")
+        html_lines.append(kj_dd.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kj_dd.empty else "<p>N/A</p>")
+        html_lines.append("<h4>Hit Rate Analysis: KJ Lambda > 90th Percentile</h4>")
+        html_lines.append("<p><em>% of high-signal days where future returns were negative, and where max drawdown exceeded -1%/-2%/-3% thresholds. Compares mean returns between high vs. normal signal regimes.</em></p>")
+        html_lines.append(kj_hit.to_html(classes='dataframe', float_format=lambda x: f"{x:.1f}") if not kj_hit.empty else "<p>N/A</p>")
 
         if not args.skip_kl:
             html_lines.append("<h3>KL MEES Predictive Significance</h3>")
             html_lines.append("<h4>Predicting Future Market Returns (Joint Level + Momentum Model)</h4>")
-            html_lines.append(kl_ret.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}"))
-            html_lines.append("<h4>Predicting Future Market Volatility (Joint Level + Momentum Model)</h4>")
-            html_lines.append(kl_vol.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}"))
+            html_lines.append(kl_ret.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kl_ret.empty else "<p>N/A</p>")
+            html_lines.append("<h4>Predicting Future Market Volatility Ratio (Joint Level + Momentum Model)</h4>")
+            html_lines.append(kl_vol.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kl_vol.empty else "<p>N/A</p>")
+            html_lines.append("<h4>Predicting Future Max Drawdown (Joint Level + Momentum Model)</h4>")
+            html_lines.append("<p><em>A negative Beta and significant t-stat indicates that when the KL signal is high, the subsequent intra-period trough is materially deeper.</em></p>")
+            html_lines.append(kl_dd.to_html(classes='dataframe', float_format=lambda x: f"{x:.4f}") if not kl_dd.empty else "<p>N/A</p>")
+            html_lines.append("<h4>Hit Rate Analysis: KL MEES > 90th Percentile</h4>")
+            html_lines.append("<p><em>% of high-signal days where future returns were negative, and where max drawdown exceeded -1%/-2%/-3% thresholds.</em></p>")
+            html_lines.append(kl_hit.to_html(classes='dataframe', float_format=lambda x: f"{x:.1f}") if not kl_hit.empty else "<p>N/A</p>")
 
         html_lines.append(f"<img src='{os.path.abspath(plot_path)}' alt='{market_name} Plot' style='max-width:100%; height:auto; margin-top:20px;'/>")
 

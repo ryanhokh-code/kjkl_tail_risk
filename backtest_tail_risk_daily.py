@@ -167,24 +167,32 @@ class TailRiskBacktester:
         return mees_daily.dropna()
 
     def prepare_forward_returns(self):
-        """Build forward return and vol-ratio DataFrames. Must be called after fetch_data()."""
+        """Build forward return, vol-ratio, and max-drawdown DataFrames. Must be called after fetch_data()."""
         if self.market_returns is None:
             self.fetch_data()
         self.fwd_returns = pd.DataFrame(index=self.market_returns.index)
         self.fwd_vol_ratios = pd.DataFrame(index=self.market_returns.index)
+        self.fwd_max_drawdown = pd.DataFrame(index=self.market_returns.index)
 
         for h in self.horizons:
+            # ---  Forward N-day return ---
             future_return = (self.market_prices.shift(-h) / self.market_prices - 1)
             self.fwd_returns[f"Return_{h}d"] = future_return
 
+            # --- Forward N-day realized volatility ratio ---
             if h > 1:
                 future_vol = self.market_returns.rolling(window=h).std() * np.sqrt(252)
             else:
                 future_vol = self.market_returns.abs() * np.sqrt(252)
-
             current_vol = self.market_returns.rolling(window=21).std().shift(1) * np.sqrt(252)
             vol_ratio = future_vol.shift(-h) / current_vol
             self.fwd_vol_ratios[f"VolRatio_{h}d"] = vol_ratio
+
+            # --- Forward N-day Max Drawdown ---
+            # = min price over next h days / price today - 1  (always <= 0)
+            rolling_min = self.market_prices.shift(-1).rolling(window=max(h, 1)).min().shift(-(max(h, 1) - 1))
+            max_dd = rolling_min / self.market_prices - 1
+            self.fwd_max_drawdown[f"MaxDD_{h}d"] = max_dd
 
     def generate_signals(self):
         kj_lambda = self.compute_daily_kj_lambda()
@@ -198,10 +206,16 @@ class TailRiskBacktester:
         self.prepare_forward_returns()
 
         # Align all dataframes
-        common_index = self.signals.index.intersection(self.fwd_returns.index).intersection(self.fwd_vol_ratios.index)
+        common_index = (
+            self.signals.index
+            .intersection(self.fwd_returns.index)
+            .intersection(self.fwd_vol_ratios.index)
+            .intersection(self.fwd_max_drawdown.index)
+        )
         self.signals = self.signals.loc[common_index]
         self.fwd_returns = self.fwd_returns.loc[common_index]
         self.fwd_vol_ratios = self.fwd_vol_ratios.loc[common_index]
+        self.fwd_max_drawdown = self.fwd_max_drawdown.loc[common_index]
 
 
     def run_regressions(self, measure_col='KJ_Lambda', include_velocity=True):
@@ -213,11 +227,13 @@ class TailRiskBacktester:
             print(f"Signal {measure_col} not found. Please generate signals first.")
             return None, None
             
-        if self.fwd_returns is None or self.fwd_vol_ratios is None:
-            print("Forward testing metrics not instantiatied. Returning empty frame.")
-            return pd.DataFrame(), pd.DataFrame()
+        if self.fwd_returns is None or self.fwd_vol_ratios is None or self.fwd_max_drawdown is None:
+            print("Forward testing metrics not instantiated. Run prepare_forward_returns() first.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-        aligned_data = pd.concat([self.signals, self.fwd_returns, self.fwd_vol_ratios], axis=1).dropna()
+        aligned_data = pd.concat(
+            [self.signals, self.fwd_returns, self.fwd_vol_ratios, self.fwd_max_drawdown], axis=1
+        ).dropna()
         
         X_level = aligned_data[measure_col]
         # Calculate 5-day Velocity (momentum)
@@ -226,14 +242,15 @@ class TailRiskBacktester:
         aligned_data = aligned_data.dropna()
         
         if aligned_data.empty:
-             print("No overlapping data found for regressions.")
-             return pd.DataFrame(), pd.DataFrame()
+            print("No overlapping data found for regressions.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
         X_level = aligned_data[measure_col]
         X_vel = aligned_data['Velocity']
 
         ret_results = []
         vol_results = []
+        dd_results = []
 
         for h in self.horizons:
             # Predict Returns
@@ -261,7 +278,9 @@ class TailRiskBacktester:
                 })
 
             # Predict Volatility Ratio
-            y_vol = aligned_data[f'VolRatio_{h}d']
+            y_vol = aligned_data.get(f'VolRatio_{h}d')
+            if y_vol is None:
+                continue
             
             if include_velocity:
                 X_multi = sm.add_constant(pd.DataFrame({measure_col: X_level, f'{measure_col}_Velocity': X_vel}))
@@ -284,8 +303,93 @@ class TailRiskBacktester:
                     'Adj. R-squared': model_vol.rsquared_adj
                 })
 
-        return pd.DataFrame(ret_results).set_index('Horizon (Days)').round(4), pd.DataFrame(vol_results).set_index('Horizon (Days)').round(4)
-        
+            # --- Predict Max Drawdown ---
+            y_dd = aligned_data.get(f'MaxDD_{h}d')
+            if y_dd is not None:
+                if include_velocity:
+                    X_multi_dd = sm.add_constant(pd.DataFrame({measure_col: X_level, f'{measure_col}_Velocity': X_vel}))
+                    model_dd = sm.OLS(y_dd, X_multi_dd).fit(cov_type='HAC', cov_kwds={'maxlags': h})
+                    dd_results.append({
+                        'Horizon (Days)': h,
+                        f'{measure_col} Beta': model_dd.params.get(measure_col, np.nan),
+                        f'{measure_col} t-stat': model_dd.tvalues.get(measure_col, np.nan),
+                        f'{measure_col}_Vel Beta': model_dd.params.get(f'{measure_col}_Velocity', np.nan),
+                        f'{measure_col}_Vel t-stat': model_dd.tvalues.get(f'{measure_col}_Velocity', np.nan),
+                        'Adj. R-squared': model_dd.rsquared_adj
+                    })
+                else:
+                    X_uni_dd = sm.add_constant(X_level)
+                    model_dd = sm.OLS(y_dd, X_uni_dd).fit(cov_type='HAC', cov_kwds={'maxlags': h})
+                    dd_results.append({
+                        'Horizon (Days)': h,
+                        f'{measure_col} Beta': model_dd.params[measure_col],
+                        f'{measure_col} t-stat': model_dd.tvalues[measure_col],
+                        'Adj. R-squared': model_dd.rsquared_adj
+                    })
+
+        return (
+            pd.DataFrame(ret_results).set_index('Horizon (Days)').round(4),
+            pd.DataFrame(vol_results).set_index('Horizon (Days)').round(4),
+            pd.DataFrame(dd_results).set_index('Horizon (Days)').round(4)
+        )
+
+    def compute_hit_rates(self, measure_col='KJ_Lambda', signal_threshold_pct=90,
+                          drawdown_thresholds=(-0.01, -0.02, -0.03)):
+        """
+        Empirical hit rate analysis.
+        For days where the signal exceeds `signal_threshold_pct` percentile:
+          - % of those days where future N-day return was negative
+          - % of those days where future N-day max drawdown exceeded each drawdown threshold
+          - Mean return in high-signal vs. normal-signal regimes
+        Returns a DataFrame.
+        """
+        if self.signals is None or self.fwd_returns is None or self.fwd_max_drawdown is None:
+            print("Signals or forward returns not ready. Run generate_signals() first.")
+            return pd.DataFrame()
+
+        signal = self.signals[measure_col]
+        threshold_val = np.percentile(signal.dropna(), signal_threshold_pct)
+        high_signal_mask = signal >= threshold_val
+        normal_signal_mask = ~high_signal_mask
+
+        rows = []
+        for h in self.horizons:
+            ret_col = f"Return_{h}d"
+            dd_col = f"MaxDD_{h}d"
+
+            if ret_col not in self.fwd_returns.columns or dd_col not in self.fwd_max_drawdown.columns:
+                continue
+
+            ret = self.fwd_returns[ret_col]
+            dd = self.fwd_max_drawdown[dd_col]
+
+            high_ret = ret[high_signal_mask].dropna()
+            normal_ret = ret[normal_signal_mask].dropna()
+            high_dd = dd[high_signal_mask].dropna()
+
+            n_high = len(high_ret)
+            n_normal = len(normal_ret)
+
+            if n_high == 0:
+                continue
+
+            row = {
+                'Horizon (Days)': h,
+                'N (High Signal)': n_high,
+                'N (Normal)': n_normal,
+                f'Signal Threshold (>{signal_threshold_pct}th Pct)': round(threshold_val, 4),
+                'Hit Rate: Ret<0 (%)': round((high_ret < 0).mean() * 100, 1),
+                'Avg Ret (High Signal)': round(high_ret.mean() * 100, 2),
+                'Avg Ret (Normal)': round(normal_ret.mean() * 100, 2),
+                'Ret Spread (High-Normal, %)': round((high_ret.mean() - normal_ret.mean()) * 100, 2),
+            }
+            for thr in drawdown_thresholds:
+                pct_lbl = int(abs(thr) * 100)
+                row[f'Hit Rate: MaxDD<{thr*100:.0f}% (%)'] = round((high_dd <= thr).mean() * 100, 1)
+
+            rows.append(row)
+
+        return pd.DataFrame(rows).set_index('Horizon (Days)')
 
     def visualize_signals(self, save_path='daily_tail_risk_prediction.png'):
         if self.signals is None:

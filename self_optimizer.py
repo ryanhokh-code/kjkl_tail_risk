@@ -61,7 +61,7 @@ def optimize_kj_measure(bt, param_grid):
                     continue
                     
                 bt.signals = pd.DataFrame({'KJ_Lambda': lambdas})
-                ret_df, vol_df = bt.run_regressions('KJ_Lambda')
+                ret_df, vol_df, _ = bt.run_regressions('KJ_Lambda')
                 
                 # Objective Score: Sum of absolute Newey-West t-statistics across horizons
                 score = ret_df['KJ_Lambda t-stat'].abs().sum() + vol_df['KJ_Lambda t-stat'].abs().sum()
@@ -94,7 +94,7 @@ def optimize_kl_measure(bt, param_grid):
                         continue
                         
                     bt.signals = pd.DataFrame({'KL_MEES': mees})
-                    ret_df, vol_df = bt.run_regressions('KL_MEES')
+                    ret_df, vol_df, _ = bt.run_regressions('KL_MEES')
                     
                     score = ret_df['KL_MEES t-stat'].abs().sum() + vol_df['KL_MEES t-stat'].abs().sum()
                     
