@@ -1,0 +1,93 @@
+{
+    "^GSPC": {
+        "KJ_Lambda": {
+            "window": 90,
+            "quantile": 0.1,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "000300.SS": {
+        "KJ_Lambda": {
+            "window": 30,
+            "quantile": 0.05,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "^HSI": {
+        "KJ_Lambda": {
+            "window": 90,
+            "quantile": 0.05,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "^TWII": {
+        "KJ_Lambda": {
+            "window": 90,
+            "quantile": 0.05,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "^N225": {
+        "KJ_Lambda": {
+            "window": 60,
+            "quantile": 0.1,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "^KS11": {
+        "KJ_Lambda": {
+            "window": 90,
+            "quantile": 0.1,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    },
+    "^STOXX50E": {
+        "KJ_Lambda": {
+            "window": 30,
+            "quantile": 0.05,
+            "last_updated": "2026-03-07"
+        },
+        "KL_MEES": {
+            "window": 30,
+            "n_pca": 4,
+            "alpha": 0.1,
+            "last_updated": "2026-03-07"
+        }
+    }
+}

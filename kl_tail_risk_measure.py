@@ -14,7 +14,8 @@ warnings.filterwarnings("ignore")
 
 class KLTailRiskAnalysis:
     def __init__(self, tickers=None, target_index='SPY', start_date="2020-01-01", end_date="2024-01-01", 
-                 enable_pca=True, pca_variance=0.90, target_portfolios=4):
+                 enable_pca=True, pca_variance=0.90, target_portfolios=4,
+                 window=30, n_pca=None, alpha=0.10):
         if tickers is None:
             self.tickers = [
                 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
@@ -32,7 +33,14 @@ class KLTailRiskAnalysis:
         
         self.enable_pca = enable_pca
         self.pca_variance = pca_variance
-        self.target_portfolios = target_portfolios
+        # n_pca kwarg overrides target_portfolios if provided
+        self.target_portfolios = n_pca if n_pca is not None else target_portfolios
+        self.window = window
+        self.alpha = alpha
+        
+        # Populated by calculate_portfolio_returns or compute_mees
+        self.data = None
+        self.daily_returns = None
 
     @staticmethod
     def historical_var(returns, alpha=0.10):
@@ -141,6 +149,10 @@ class KLTailRiskAnalysis:
         mees_val, extracted_opt_weights = self.calculate_mees_core_weights(
             optimization_returns, P=self.target_portfolios, alpha=alpha)
 
+        pca_loadings = None
+        if self.enable_pca and pca is not None:
+             pca_loadings = pca.components_[0]
+             
         # Map weights back to assets
         final_asset_weights = []
         if self.enable_pca and extracted_opt_weights:
@@ -150,7 +162,7 @@ class KLTailRiskAnalysis:
         else:
             final_asset_weights = extracted_opt_weights
 
-        return mees_val, final_asset_weights
+        return mees_val, final_asset_weights, pca_loadings
 
     @staticmethod
     def run_multi_horizon_regression(monthly_tail_risk, target_prices, horizons=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]):
@@ -309,20 +321,28 @@ class KLTailRiskAnalysis:
         resample_str = 'ME' if hasattr(pd.Series.resample, 'ME') else 'M'
         monthly_stock_returns = stock_prices.resample(resample_str).last().pct_change().dropna()
 
+    def compute_mees(self, return_loadings=False):
         print(f"2. Calculating daily rolling MEES (PCA Enabled: {self.enable_pca})...")
-        eval_dates = daily_returns.index[29:]
+        eval_dates = self.daily_returns.index[self.window - 1:]
         mees_daily = pd.Series(index=eval_dates, dtype=float, name="MEES")
+        daily_loadings = {}
 
         for date in eval_dates:
-            mees_val, _ = self.calculate_single_day_mees(
+            mees_val, _, pca_loadings = self.calculate_single_day_mees(
                 target_date=date,
-                returns_df=daily_returns,
-                window=30,
-                alpha=0.10
+                returns_df=self.daily_returns,
+                window=self.window,
+                alpha=self.alpha
             )
             mees_daily.loc[date] = mees_val
+            if return_loadings and pca_loadings is not None:
+                 daily_loadings[date] = pca_loadings
 
-        mees_daily = mees_daily.dropna()
+        if return_loadings:
+            # Return Series of MEES and the last available 1st PC loadings dictionary
+            return mees_daily.dropna(), daily_loadings
+            
+        return mees_daily.dropna()
         mees_monthly = mees_daily.resample(resample_str).last() 
 
         print("\n3. Running Predictive Regressions (Predicting SPY)...")
