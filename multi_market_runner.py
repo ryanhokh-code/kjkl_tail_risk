@@ -116,9 +116,19 @@ def main():
             kl_dd_str = kl_dd.to_markdown() if not kl_dd.empty else "N/A"
             kl_hit_str = kl_hit.to_markdown() if not kl_hit.empty else "N/A"
         
-        # Save plots specific to market
+        # Save time-series signal visualisation
         plot_path = f"export_img/daily_tail_risk_{market.replace('^', '')}.png"
         bt_eval.visualize_signals(save_path=plot_path)
+
+        # Generate scatter plots: risk measure vs forward outcomes
+        kj_scatter_path = bt_eval.generate_scatter_plots(
+            measure_col='KJ_Lambda',
+            save_path=f"export_img/scatter_KJ_{market.replace('^', '')}.png"
+        )
+        kl_scatter_path = bt_eval.generate_scatter_plots(
+            measure_col='KL_MEES',
+            save_path=f"export_img/scatter_KL_{market.replace('^', '')}.png"
+        )
 
         # 3. REPORTING PHASE (Markdown)
         report_lines.append(f"## {market_name} ({market})")
@@ -150,6 +160,12 @@ def main():
             report_lines.append(kl_hit_str)
 
         report_lines.append(f"\n![{market_name} Tail Risk Prediction Plot]({os.path.abspath(plot_path)})\n")
+        if kj_scatter_path:
+            report_lines.append(f"\n**KJ Lambda — Scatter: Risk Measure vs Forward Outcomes**")
+            report_lines.append(f"![KJ Scatter {market_name}]({os.path.abspath(kj_scatter_path)})\n")
+        if kl_scatter_path:
+            report_lines.append(f"\n**KL MEES — Scatter: Risk Measure vs Forward Outcomes**")
+            report_lines.append(f"![KL Scatter {market_name}]({os.path.abspath(kl_scatter_path)})\n")
         report_lines.append("---\n")
         
         # 4. REPORTING PHASE (HTML with Interpretations)
@@ -208,6 +224,16 @@ def main():
             html_lines.append(kl_hit.to_html(classes='dataframe', float_format=lambda x: f"{x:.1f}") if not kl_hit.empty else "<p>N/A</p>")
 
         html_lines.append(f"<img src='{os.path.abspath(plot_path)}' alt='{market_name} Plot' style='max-width:100%; height:auto; margin-top:20px;'/>")
+
+        if kj_scatter_path:
+            html_lines.append("<h4>KJ Lambda — Scatter: Risk Measure vs Forward Outcomes</h4>")
+            html_lines.append("<p><em>Each point is one trading day. <span style='color:#d62728;font-weight:bold;'>Red dots</span> are days where the signal exceeded its 90th percentile. The dashed line is the OLS best fit.</em></p>")
+            html_lines.append(f"<img src='{os.path.abspath(kj_scatter_path)}' alt='KJ Scatter {market_name}' style='max-width:100%; height:auto; margin-top:10px;'/>")
+
+        if kl_scatter_path:
+            html_lines.append("<h4>KL MEES — Scatter: Risk Measure vs Forward Outcomes</h4>")
+            html_lines.append("<p><em>Each point is one trading day. <span style='color:#d62728;font-weight:bold;'>Red dots</span> are days where the signal exceeded its 90th percentile. The dashed line is the OLS best fit.</em></p>")
+            html_lines.append(f"<img src='{os.path.abspath(kl_scatter_path)}' alt='KL Scatter {market_name}' style='max-width:100%; height:auto; margin-top:10px;'/>")
 
     # Write Final Markdown Report
     report_file = "multi_market_report.md"

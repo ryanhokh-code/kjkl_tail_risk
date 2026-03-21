@@ -454,6 +454,94 @@ class TailRiskBacktester:
         plt.savefig(save_path)
         print(f"\nSaved visualization to '{save_path}'.")
 
+    def generate_scatter_plots(self, measure_col='KJ_Lambda', save_path=None):
+        """
+        For a given risk measure, generate a 3-row x N-horizon grid of scatter plots:
+          Row 0: Risk Measure  vs  Forward Return
+          Row 1: Risk Measure  vs  Forward Vol Ratio
+          Row 2: Risk Measure  vs  Forward Max Drawdown
+        A linear regression line is overlaid on each panel.
+        Returns the saved file path.
+        """
+        if self.signals is None or self.fwd_returns is None:
+            print("Signals / forward data not ready. Run generate_signals() first.")
+            return None
+
+        if measure_col not in self.signals.columns:
+            print(f"Measure '{measure_col}' not found in signals.")
+            return None
+
+        if save_path is None:
+            tag = self.market_ticker.replace('^', '')
+            save_path = f"export_img/scatter_{measure_col}_{tag}.png"
+
+        n_horizons = len(self.horizons)
+        targets = [
+            ('Forward Return (%)', self.fwd_returns, 'Return_{}d', 100.0),
+            ('Forward Vol Ratio', self.fwd_vol_ratios, 'VolRatio_{}d', 1.0),
+            ('Forward Max Drawdown (%)', self.fwd_max_drawdown, 'MaxDD_{}d', 100.0),
+        ]
+        n_rows = len(targets)
+
+        fig, axes = plt.subplots(
+            n_rows, n_horizons,
+            figsize=(7 * n_horizons, 6 * n_rows),
+            squeeze=False
+        )
+        fig.suptitle(
+            f"{self.market_ticker} — {measure_col} vs Forward Outcomes",
+            fontsize=14, fontweight='bold', y=1.01
+        )
+
+        x_raw = self.signals[measure_col]
+
+        for row_idx, (row_label, fwd_df, col_tpl, scale) in enumerate(targets):
+            for col_idx, h in enumerate(self.horizons):
+                ax = axes[row_idx][col_idx]
+                col_name = col_tpl.format(h)
+
+                if col_name not in fwd_df.columns:
+                    ax.set_visible(False)
+                    continue
+
+                combined = pd.concat([x_raw, fwd_df[col_name]], axis=1).dropna()
+                if combined.empty:
+                    ax.set_visible(False)
+                    continue
+
+                x = combined[measure_col].values
+                y = combined[col_name].values * scale
+
+                # 90th-percentile colouring
+                thresh = np.percentile(x, 90)
+                colours = np.where(x >= thresh, '#d62728', '#1f77b4')
+                ax.scatter(x, y, c=colours, alpha=0.35, s=12, linewidths=0)
+
+                # OLS regression line
+                if len(x) > 3:
+                    m, b = np.polyfit(x, y, 1)
+                    x_line = np.linspace(x.min(), x.max(), 200)
+                    ax.plot(x_line, m * x_line + b, color='black', linewidth=1.5,
+                            linestyle='--', label=f'Slope={m:.2f}')
+                    ax.legend(fontsize=7, loc='upper right')
+
+                ax.axhline(0, color='grey', linewidth=0.8, linestyle=':')
+                ax.set_xlabel(measure_col, fontsize=8)
+                ax.set_ylabel(row_label, fontsize=8)
+                ax.set_title(f'{h}-day horizon', fontsize=9)
+                ax.tick_params(labelsize=7)
+
+            # Row label on the left-most panel
+            axes[row_idx][0].set_ylabel(row_label, fontsize=9, fontweight='bold')
+
+        plt.tight_layout()
+        import os
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=120)
+        plt.close(fig)
+        print(f"Saved scatter plots to '{save_path}'.")
+        return save_path
+
     def run_full_analysis(self):
         self.generate_signals()
         

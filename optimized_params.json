@@ -3,7 +3,7 @@
         "KJ_Lambda": {
             "window": 90,
             "quantile": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -16,7 +16,7 @@
         "KJ_Lambda": {
             "window": 30,
             "quantile": 0.05,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -29,7 +29,7 @@
         "KJ_Lambda": {
             "window": 90,
             "quantile": 0.05,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -42,7 +42,7 @@
         "KJ_Lambda": {
             "window": 90,
             "quantile": 0.05,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -55,7 +55,7 @@
         "KJ_Lambda": {
             "window": 60,
             "quantile": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -68,7 +68,7 @@
         "KJ_Lambda": {
             "window": 90,
             "quantile": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
@@ -81,7 +81,7 @@
         "KJ_Lambda": {
             "window": 30,
             "quantile": 0.05,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         },
         "KL_MEES": {
             "window": 30,
