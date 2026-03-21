@@ -6,19 +6,19 @@ from sklearn.linear_model import LinearRegression
 
 
 # 1. DATA RETRIEVAL LOGIC (Independent Function)
-def fetch_financial_data(tickers, market_ticker='SPY', period='5y'):
-    """
-    Fetches daily price data and returns two DataFrames of daily returns.
-    The index is dates, columns are stock tickers.
-    """
-    print(f"Downloading daily data for {len(tickers)} stocks and market proxy...")
-    raw_data = yf.download(tickers, period=period)['Close']
-    market_data = yf.download(market_ticker, period=period)['Close']
+from utils import fetch_financial_data
 
-    # Calculate daily returns as required for the Hill estimator (KJ 2014, Sec 2.1)
-    daily_stock_returns = raw_data.pct_change().dropna(how='all')
-    daily_market_returns = market_data.pct_change().dropna()
-
+def get_kj_returns(tickers, market_ticker='SPY', period='5y'):
+    import datetime
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=5*365)
+    
+    data = fetch_financial_data(tickers + [market_ticker], str(start), str(end))
+    stock_prices = data[tickers]
+    market_prices = data[market_ticker]
+    
+    daily_stock_returns = stock_prices.pct_change().dropna(how='all')
+    daily_market_returns = market_prices.pct_change().dropna()
     return daily_stock_returns, daily_market_returns
 
 
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     tickers = MARKET_UNIVERSES['^GSPC']['tickers']
 
     # Step 1: Data Fetching
-    daily_returns, mkt_returns = fetch_financial_data(tickers)
+    daily_returns, mkt_returns = get_kj_returns(tickers)
 
     # Step 2: Analysis Class instantiation
     analyzer = TailRiskAnalyzer(daily_returns, mkt_returns)

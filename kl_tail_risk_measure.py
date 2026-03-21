@@ -37,42 +37,9 @@ class KLTailRiskAnalysis:
         self.data = None
         self.daily_returns = None
 
-    @staticmethod
-    def historical_var(returns, alpha=0.10):
-        """Calculates the historical Value-at-Risk at the alpha level."""
-        return np.percentile(returns, alpha * 100)
-
-    @staticmethod
-    def objective_excess_shortfall(weights, returns, alpha=0.10):
-        """Objective function: Minimum Excess Expected Shortfall."""
-        J = len(returns)
-        port_returns = returns @ weights
-        var_alpha = KLTailRiskAnalysis.historical_var(port_returns, alpha)
-
-        breaches = port_returns[port_returns <= var_alpha]
-        if len(breaches) == 0:
-            return 0.0
-
-        return np.sum(np.abs(breaches - var_alpha)) / (alpha * J)
-
-    @staticmethod
-    def zero_covariance_constraint(weights, returns, prev_weights_list):
-        """Ensures the current portfolio has zero covariance with all previously extracted portfolios."""
-        if not prev_weights_list:
-            return 0.0
-
-        port_returns = returns @ weights
-        covariances = []
-
-        for prev_weights in prev_weights_list:
-            prev_returns = returns @ prev_weights
-            cov = np.cov(port_returns, prev_returns)[0, 1]
-            covariances.append(cov)
-
-        return np.sum(np.square(covariances))
-
     def calculate_mees_core_weights(self, returns_matrix, P=5, alpha=0.10):
         """Core mathematical optimization for MEES using SLSQP."""
+        from utils import objective_excess_shortfall, zero_covariance_constraint
         J, n = returns_matrix.shape
         extracted_weights = []
         portfolio_shortfalls = []
@@ -86,11 +53,11 @@ class KLTailRiskAnalysis:
             if p > 1:
                 constraints.append({
                     'type': 'eq',
-                    'fun': lambda w, pwl=extracted_weights: self.zero_covariance_constraint(w, returns_matrix, pwl)
+                    'fun': lambda w, pwl=extracted_weights: zero_covariance_constraint(w, returns_matrix, pwl)
                 })
 
             result = minimize(
-                self.objective_excess_shortfall,
+                objective_excess_shortfall,
                 init_guess,
                 args=(returns_matrix, alpha),
                 method='SLSQP',
@@ -102,27 +69,16 @@ class KLTailRiskAnalysis:
             if result.success:
                 optimal_weights = result.x
                 extracted_weights.append(optimal_weights)
-                min_shortfall = self.objective_excess_shortfall(optimal_weights, returns_matrix, alpha)
+                min_shortfall = objective_excess_shortfall(optimal_weights, returns_matrix, alpha)
                 portfolio_shortfalls.append(min_shortfall)
             else:
                 return np.nan, []
 
         return np.mean(portfolio_shortfalls), extracted_weights
 
-    @staticmethod
-    def map_pca_weights_to_assets(w_pca, pca_model):
-        """Maps the optimized PCA weights back to the original asset space."""
-        w_asset = np.dot(w_pca, pca_model.components_)
-
-        # Normalize weights so the absolute gross exposure equals 1
-        total_exposure = np.sum(np.abs(w_asset))
-        if total_exposure > 0:
-            w_asset = w_asset / total_exposure
-
-        return w_asset
-
     def calculate_single_day_mees(self, target_date, returns_df, window=30, alpha=0.10):
         """Calculates MEES measure for a single day, handling PCA if toggled."""
+        from utils import map_pca_weights_to_assets
         if target_date not in returns_df.index:
             return np.nan, []
 
@@ -152,7 +108,7 @@ class KLTailRiskAnalysis:
         final_asset_weights = []
         if self.enable_pca and extracted_opt_weights:
             for w_pca in extracted_opt_weights:
-                w_asset = self.map_pca_weights_to_assets(w_pca, pca)
+                w_asset = map_pca_weights_to_assets(w_pca, pca)
                 final_asset_weights.append(w_asset)
         else:
             final_asset_weights = extracted_opt_weights
@@ -303,7 +259,8 @@ class KLTailRiskAnalysis:
     def run_pipeline(self):
         print(f"1. Fetching data for {len(self.tickers)} stocks and {self.target_index}...")
         try:
-            data = yf.download(self.tickers + [self.target_index], start=self.start_date, end=self.end_date, progress=False)['Close']
+            from utils import fetch_financial_data
+            data = fetch_financial_data(self.tickers + [self.target_index], self.start_date, self.end_date)
         except Exception as e:
             print(f"Failed to fetch data: {e}")
             return

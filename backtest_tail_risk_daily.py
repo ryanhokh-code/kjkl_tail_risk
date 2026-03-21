@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from kl_tail_risk_measure import KLTailRiskAnalysis
@@ -41,29 +40,41 @@ class TailRiskBacktester:
         }
         
         if load_optimized_params:
-            self._load_optimized_file()
+            from utils import load_optimized_params
+            pdict = load_optimized_params(self.market_ticker)
+            if pdict:
+                self.params = pdict
+                print(f"Loaded optimized params for {self.market_ticker}: {self.params}")
+            else:
+                print(f"No optimized params found for {self.market_ticker}. Using defaults.")
             
-    def _load_optimized_file(self):
-        import os
-        import json
-        param_file = 'optimized_params.json'
-        if os.path.exists(param_file):
-            try:
-                with open(param_file, 'r') as f:
-                    all_params = json.load(f)
-                
-                if self.market_ticker in all_params:
-                    market_cfg = all_params[self.market_ticker]
-                    for measure in ['KJ_Lambda', 'KL_MEES']:
-                        if measure in market_cfg:
-                            self.params[measure].update(market_cfg[measure])
-                    print(f"Loaded optimized parameters for {self.market_ticker}: {self.params}")
-            except Exception as e:
-                print(f"Failed to load {param_file}: {e}")
-        
     def fetch_data(self):
         print(f"Downloading data for {len(self.tickers)} stocks and market proxy {self.market_ticker}...")
-        data = yf.download(self.tickers + [self.market_ticker], start=self.start_date, end=self.end_date, progress=False)['Close']
+        try:
+            from utils import fetch_financial_data
+            data = fetch_financial_data(self.tickers + [self.market_ticker], self.start_date, self.end_date)
+            if data is None or data.empty:
+                print("Error: No data returned from fetcher.")
+                return
+        except Exception as e:
+            print(f"Failed to fetch data: {e}")
+            return
+            
+        # Filter available tickers to avoid KeyError
+        available_tickers = [t for t in self.tickers if t in data.columns]
+        if not available_tickers:
+            print(f"Error: None of the requested tickers were found in the data for {self.market_ticker}.")
+            return
+            
+        if len(available_tickers) < len(self.tickers):
+            missing = set(self.tickers) - set(available_tickers)
+            print(f"Warning: {len(missing)} tickers were missing from data: {missing}")
+            self.tickers = available_tickers # Update internal ticker list to only include available ones
+            
+        if self.market_ticker not in data.columns:
+            print(f"Error: Market proxy {self.market_ticker} not found in the data.")
+            return
+
         stock_prices = data[self.tickers]
         market_prices = data[self.market_ticker]
         
@@ -75,58 +86,10 @@ class TailRiskBacktester:
         self.stock_returns = stock_returns.loc[common_idx]
         self.market_returns = market_returns.loc[common_idx]
         self.market_prices = market_prices.loc[common_idx]
-        self.data = data
-
-    def _cache_path(self, signal_name, params_dict=None):
-        """Returns the file path for the parquet cache of a given signal with param fingerprint."""
-        # Sanitize market ticker for filename
-        mkt_safe = self.market_ticker.replace('^', '')
-        dir_path = os.path.join(CACHE_DIR, mkt_safe)
-        os.makedirs(dir_path, exist_ok=True)
-        
-        if params_dict:
-            # Create a sorted string of parameters for the filename
-            # Filter out non-numeric/string values if any
-            param_parts = []
-            for k in sorted(params_dict.keys()):
-                v = params_dict[k]
-                param_parts.append(f"{k}{v}")
-            param_str = "_".join(param_parts)
-            filename = f"{signal_name}_{param_str}.parquet"
-        else:
-            filename = f"{signal_name}.parquet"
-            
-        return os.path.join(dir_path, filename)
-
-    def _load_cache(self, signal_name, params_dict=None):
-        """Loads cached signal series from Parquet if it exists."""
-        cache_file = self._cache_path(signal_name, params_dict)
-        if os.path.exists(cache_file):
-            try:
-                df = pd.read_parquet(cache_file)
-                # Ensure index is datetime objects
-                df.index = pd.to_datetime(df.index)
-                series = df.iloc[:, 0] # Take first column
-                # Fix pandas losing series name when saved as single-col dataframe
-                series.name = "KJ_Lambda" if "kj" in signal_name.lower() else "KL_MEES"
-                return series
-            except Exception as e:
-                print(f"Warning: Failed to load cache from {cache_file}: {e}")
-        return None
-
-    def _save_cache(self, signal_name, series, params_dict=None):
-        """Saves signal series to Parquet cache."""
-        cache_file = self._cache_path(signal_name, params_dict)
-        try:
-            df = pd.DataFrame({series.name if series.name else signal_name: series})
-            # Exclude timezone info for saving to avoid parquet issues if mixed
-            df.index = pd.to_datetime(df.index).tz_localize(None)
-            df.to_parquet(cache_file)
-            print(f"Saved {len(series)} dates to cache: {cache_file}")
-        except Exception as e:
-            print(f"Warning: Failed to save cache to {cache_file}: {e}")
+        self.data = data.loc[common_idx] # Aligned full data if needed later
 
     def compute_daily_kj_lambda(self, window=None, quantile=None, mode='full'):
+        from utils import load_parquet_cache, save_parquet_cache
         if window is None: window = self.params['KJ_Lambda']['window']
         if quantile is None: quantile = self.params['KJ_Lambda']['quantile']
         
@@ -142,8 +105,10 @@ class TailRiskBacktester:
         eval_dates = self.stock_returns.index[window:]
         
         if mode == 'incremental':
-            cached_series = self._load_cache("kj_lambda", params_dict=p_dict)
-            if cached_series is not None:
+            cached_series = load_parquet_cache(self.market_ticker, "KJ_Lambda", params_dict=p_dict)
+            if cached_series is not None and not cached_series.empty:
+                # Ensure the loaded series has the correct name
+                cached_series.name = "KJ_Lambda"
                 # Find dates in eval_dates that are NOT in cached_series
                 missing_dates = eval_dates.difference(cached_series.index)
                 if len(missing_dates) == 0:
@@ -198,10 +163,12 @@ class TailRiskBacktester:
         else:
             full_series = lambdas
             
-        self._save_cache("kj_lambda", full_series, params_dict=p_dict)
+        save_parquet_cache(self.market_ticker, "KJ_Lambda", full_series, params_dict=p_dict)
+        full_series.name = "KJ_Lambda"
         return full_series
 
     def compute_daily_kl_mees(self, window=None, n_pca=None, alpha=None, mode='full'):
+        from utils import load_parquet_cache, save_parquet_cache
         if window is None: window = self.params.get('KL_MEES', {}).get('window', 30)
         if n_pca is None: n_pca = self.params.get('KL_MEES', {}).get('n_pca', 4)
         if alpha is None: alpha = self.params.get('KL_MEES', {}).get('alpha', 0.10)
@@ -217,8 +184,10 @@ class TailRiskBacktester:
         eval_dates = self.stock_returns.index[window:]
         
         if mode == 'incremental':
-            cached_series = self._load_cache("kl_mees", params_dict=p_dict)
-            if cached_series is not None:
+            cached_series = load_parquet_cache(self.market_ticker, "KL_MEES", params_dict=p_dict)
+            if cached_series is not None and not cached_series.empty:
+                # Ensure the loaded series has the correct name
+                cached_series.name = "KL_MEES"
                 missing_dates = eval_dates.difference(cached_series.index)
                 if len(missing_dates) == 0:
                     print(f"  -> All dates already cached for KL MEES (w={window}, n={n_pca}, a={alpha}).")
@@ -262,7 +231,8 @@ class TailRiskBacktester:
         else:
             full_series = mees_daily
             
-        self._save_cache("kl_mees", full_series, params_dict=p_dict)
+        save_parquet_cache(self.market_ticker, "KL_MEES", full_series, params_dict=p_dict)
+        full_series.name = "KL_MEES"
         return full_series
 
     def prepare_forward_returns(self):
@@ -323,8 +293,8 @@ class TailRiskBacktester:
         Optionally includes the 5-day velocity (momentum) of the measure as a multivariate predictor.
         """
         if measure_col not in self.signals:
-            print(f"Signal {measure_col} not found. Please generate signals first.")
-            return None, None
+            print(f"Signal {measure_col} not found in {self.signals.columns}. Please generate signals first.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
             
         if self.fwd_returns is None or self.fwd_vol_ratios is None or self.fwd_max_drawdown is None:
             print("Forward testing metrics not instantiated. Run prepare_forward_returns() first.")

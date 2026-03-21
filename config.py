@@ -16,6 +16,13 @@ CACHE_DIR = os.path.join(PROJECT_DIR, 'cache')
 EXPORT_IMG_DIR = os.path.join(PROJECT_DIR, 'export_img')
 
 # ---------------------------------------------------------------------------
+# Database Configuration
+# ---------------------------------------------------------------------------
+# Optional PostgreSQL connection string. If None or invalid, falls back to yfinance.
+# Example: 'postgresql+psycopg2://user:password@localhost/dbname'
+DB_CONNECTION_STRING = os.environ.get('KJ_KL_DB_URL', None)
+
+# ---------------------------------------------------------------------------
 # Default date range & horizons
 # ---------------------------------------------------------------------------
 DEFAULT_START_DATE = '2018-01-01'

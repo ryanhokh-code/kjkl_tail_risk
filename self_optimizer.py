@@ -10,40 +10,7 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-def save_optimized_params(market_ticker, best_kj, best_kl):
-    if os.path.exists(PARAM_FILE):
-        with open(PARAM_FILE, 'r') as f:
-            try:
-                all_params = json.load(f)
-            except json.JSONDecodeError:
-                all_params = {}
-    else:
-        all_params = {}
-        
-    if market_ticker not in all_params:
-        all_params[market_ticker] = {}
-        
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    
-    if best_kj is not None:
-        all_params[market_ticker]['KJ_Lambda'] = {
-            'window': best_kj['window'],
-            'quantile': best_kj['quantile'],
-            'last_updated': date_str
-        }
-        
-    if best_kl is not None:
-        all_params[market_ticker]['KL_MEES'] = {
-            'window': best_kl['window'],
-            'n_pca': best_kl['n_pca'],
-            'alpha': best_kl['alpha'],
-            'last_updated': date_str
-        }
-        
-    with open(PARAM_FILE, 'w') as f:
-        json.dump(all_params, f, indent=4)
-        
-    print(f"\nSaved optimized parameters to {PARAM_FILE}")
+from utils import save_optimized_params
 
 def optimize_kj_measure(bt, param_grid):
     print("\n--- Optimizing Kelly-Jiang (KJ) Measure ---")

@@ -30,14 +30,14 @@ cache/                     ← Parquet data files
         ▼
 multi_market_analytics.py  ← Analytics & Report Generator
         │
-        ├── backtest_tail_risk_daily.py   ← Core engine (signals, regressions, hit rates)
-        │         ├── compute_daily_kj_lambda()     → KJ rolling Lambda signal (w/ Parquet caching)
-        │         ├── compute_daily_kl_mees()       → KL MEES signal + PCA loadings (w/ Parquet caching)
-        │         ├── prepare_forward_returns()     → Return, Vol Ratio, Max Drawdown targets
-        │         ├── run_regressions()             → HAC Newey-West OLS (Level + Velocity)
-        │         └── compute_hit_rates()           → Empirical hit rate analysis
+        ▼
+-------------------------------------------------------------------------
+shared layer: utils.py (Data Fetching + Caching + Postgres + Math)
+-------------------------------------------------------------------------
         │
-        └── multi_market_report.html  ← Full backtest report with interpretation
+        ├── backtest_tail_risk_daily.py   ← Core engine (signals, regressions, hit rates)
+        │
+        └── multi_market_report.html  ← Full backtest report (Tabbed UI)
         └── multi_market_report.md    ← Markdown version
 
 daily_monitor.py           ← Daily live risk dashboard (run every day)
@@ -119,17 +119,29 @@ Lightweight daily monitoring dashboard.
 - Displays Top-5 risk contributing tickers (from KL MEES PCA eigenvectors)
 - Outputs `daily_risk_summary.html`
 
+### `utils.py` (Central Shared Utilities)
+A robust module designed to keep the analytical engines DRY and scalable:
+- **`fetch_financial_data()`** — A database-first data fetcher. Automatically attempts to connect to your private PostgreSQL database via `config.DB_CONNECTION_STRING`. Gracefully falls back to downloading missing arrays via `yfinance` to bridge gaps.
+- Centralized Parquet caching methods for decoupled signal loading.
+- Shared mathematical optimization constraints, Zero Covariance PCA mappings, and JSON parameter persistence.
+
 ---
 
 ## Quickstart
 
 ### 1. Install dependencies
 ```bash
-pip install numpy pandas yfinance scipy scikit-learn statsmodels matplotlib tabulate fastparquet
+pip install numpy pandas yfinance scipy scikit-learn statsmodels matplotlib tabulate fastparquet psycopg2-binary SQLAlchemy
 ```
 *Note: `fastparquet` or `pyarrow` is strictly required for the Parquet-based caching system.*
 
-### 2. Daily Workflow (Run each morning)
+### 2. Configure your Database (Optional)
+If you wish to fetch daily bar data from a private PostgreSQL database instead of relying purely on the `yfinance` fallback:
+1. Open `config.py`
+2. Set `DB_CONNECTION_STRING = os.environ.get('KJ_KL_DB_URL', 'postgresql+psycopg2://user:password@localhost/dbname')`
+3. Ensure the SQL query in `utils.py` matches your table schema.
+
+### 3. Daily Workflow (Run each morning)
 Run the monitoring dashboard daily. The system operates in **incremental mode**, pulling only the missing dates, appending to the Parquet cache, and instantly outputting the risk dashboard.
 ```bash
 python daily_monitor.py
