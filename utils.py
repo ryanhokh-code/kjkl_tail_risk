@@ -237,3 +237,113 @@ def get_severity_rating(percentile):
         return {'level': 'Elevated', 'color': '#fbc02d'} # Yellow
     else:
         return {'level': 'Normal', 'color': '#388e3c'} # Green
+
+def calculate_efficiency_ratio(series, window=21):
+    """
+    Kaufman Efficiency Ratio (ER).
+    ER = Total Directional Move / Sum of Absolute Daily Changes
+    Ranges from 0 (all noise) to 1 (all signal/trend).
+    """
+    direction = series.diff(window).abs()
+    volatility = series.diff().abs().rolling(window=window).sum()
+    return (direction / volatility).replace([np.inf, -np.inf], np.nan)
+
+def calculate_signal_stability(series, window=21):
+    """
+    Signal-to-Noise Stability (Rolling Z-Score equivalent).
+    Ratio of moving average to moving standard deviation.
+    """
+    rolling_mean = series.rolling(window=window).mean()
+    rolling_std = series.rolling(window=window).std()
+    return (rolling_mean / rolling_std).replace([np.inf, -np.inf], np.nan)
+
+def calculate_lead_time_index(signal_series, price_series, threshold_pct=90, horizon=21, drawdown_threshold=-0.05):
+    """
+    Calculates the average lead time (in days) between an alert and a drawdown event.
+    Threshold_pct: The percentile of the signal to trigger an 'alert'.
+    Horizon: Look-ahead window for the crash.
+    """
+    if signal_series.empty or price_series.empty:
+        return np.nan
+        
+    # Align and handle timezone/nan
+    common_idx = signal_series.index.intersection(price_series.index)
+    sig = signal_series.loc[common_idx]
+    price = price_series.loc[common_idx]
+    
+    threshold = np.percentile(sig, threshold_pct)
+    alerts = sig[sig >= threshold].index
+    
+    # Calculate forward max drawdown
+    fwd_returns = price.pct_change(horizon).shift(-horizon)
+    # Actually we want the max drawdown in the NEXT horizon days
+    # Let's simplify: find the minimum return in the next 'horizon' days
+    fwd_min_ret = []
+    for i in range(len(price)):
+        window = price.iloc[i:i+horizon+1]
+        if len(window) < 2:
+            fwd_min_ret.append(np.nan)
+        else:
+            ret_from_start = window / window.iloc[0] - 1
+            fwd_min_ret.append(ret_from_start.min())
+            
+    fwd_min_series = pd.Series(fwd_min_ret, index=price.index)
+    crashes = fwd_min_series[fwd_min_series <= drawdown_threshold].index
+    
+    lead_times = []
+    for alert_date in alerts:
+        # Find the first crash that happens AFTER this alert date
+        future_crashes = crashes[crashes >= alert_date]
+        if not future_crashes.empty:
+            lead_day = (future_crashes[0] - alert_date).days
+            lead_times.append(lead_day)
+            
+    if not lead_times:
+        return 0.0
+    return np.mean(lead_times)
+
+def calculate_accuracy_metrics(signal_series, price_series, threshold_pct=90, horizon=21, drawdown_threshold=-0.03):
+    """
+    Calculates Precision, Recall, and F1 score for the tail risk alerts.
+    """
+    if signal_series.empty or price_series.empty:
+        return {'precision': 0, 'recall': 0, 'f1': 0, 'fpr': 0}
+
+    common_idx = signal_series.index.intersection(price_series.index)
+    sig = signal_series.loc[common_idx]
+    price = price_series.loc[common_idx]
+    
+    threshold = np.percentile(sig, threshold_pct)
+    is_alert = sig >= threshold
+    
+    # Define a 'True Event' as a drawdown > threshold in the next horizon
+    fwd_min_ret = []
+    for i in range(len(price)):
+        window = price.iloc[i:i+horizon+1]
+        if len(window) < 2:
+            fwd_min_ret.append(False)
+        else:
+            ret_from_start = window / window.iloc[0] - 1
+            fwd_min_ret.append(ret_from_start.min() <= drawdown_threshold)
+    
+    is_crash = pd.Series(fwd_min_ret, index=price.index)
+    
+    tp = (is_alert & is_crash).sum()
+    fp = (is_alert & ~is_crash).sum()
+    fn = (~is_alert & is_crash).sum()
+    tn = (~is_alert & ~is_crash).sum()
+    
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
+    
+    return {
+        'precision': np.round(precision, 4),
+        'recall': np.round(recall, 4),
+        'f1': np.round(f1, 4),
+        'fpr': np.round(fpr, 4),
+        'tp': int(tp),
+        'fp': int(fp),
+        'fn': int(fn)
+    }
