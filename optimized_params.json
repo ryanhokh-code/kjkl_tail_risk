@@ -9,7 +9,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "000300.SS": {
@@ -22,7 +22,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "^HSI": {
@@ -35,7 +35,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "^TWII": {
@@ -48,7 +48,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "^N225": {
@@ -61,7 +61,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "^KS11": {
@@ -74,7 +74,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     },
     "^STOXX50E": {
@@ -87,7 +87,7 @@
             "window": 30,
             "n_pca": 4,
             "alpha": 0.1,
-            "last_updated": "2026-03-07"
+            "last_updated": "2026-03-21"
         }
     }
 }

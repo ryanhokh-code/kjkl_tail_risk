@@ -22,11 +22,17 @@ self_optimizer.py          ← Grid-searches best parameters per market
 optimized_params.json      ← Persistent parameter store
         │
         ▼
-multi_market_runner.py     ← Runs full 7-market backtest pipeline
+multi_market_engine.py     ← Builds backtest cache (Signal Engine)
+        │
+        ▼
+cache/                     ← Parquet data files
+        │
+        ▼
+multi_market_analytics.py  ← Analytics & Report Generator
         │
         ├── backtest_tail_risk_daily.py   ← Core engine (signals, regressions, hit rates)
-        │         ├── compute_daily_kj_lambda()     → KJ rolling Lambda signal
-        │         ├── compute_daily_kl_mees()       → KL MEES signal + PCA loadings
+        │         ├── compute_daily_kj_lambda()     → KJ rolling Lambda signal (w/ Parquet caching)
+        │         ├── compute_daily_kl_mees()       → KL MEES signal + PCA loadings (w/ Parquet caching)
         │         ├── prepare_forward_returns()     → Return, Vol Ratio, Max Drawdown targets
         │         ├── run_regressions()             → HAC Newey-West OLS (Level + Velocity)
         │         └── compute_hit_rates()           → Empirical hit rate analysis
@@ -99,11 +105,10 @@ Parameter grid search for KJ and KL per market.
 - **KL grid**: window ∈ {20, 30, 60}, n_pca ∈ {2, 4, 6}, alpha ∈ {0.05, 0.10, 0.15}
 - Best params are saved to `optimized_params.json`
 
-### `multi_market_runner.py`
-Orchestrates the full 7-market optimization + backtest + reporting pipeline.
-- Runs Phase 1 (optimization) and Phase 2 (backtesting) per market
-- Generates plots to `export_img/`
-- Outputs `multi_market_report.html` and `multi_market_report.md`
+### `multi_market_engine.py` & `multi_market_analytics.py`
+Orchestrates the full 7-market pipeline, segmented into two tasks:
+- **`multi_market_engine.py`**: Runs Phase 1 (optimization) and Phase 2 (daily signal generation). Caches final signals.
+- **`multi_market_analytics.py`**: Loads signals from cache, runs regressions + hit rates per market, generates plots to `export_img/`, and outputs `multi_market_report.html` and `multi_market_report.md`.
 
 ### `daily_monitor.py`
 Lightweight daily monitoring dashboard.
@@ -120,24 +125,34 @@ Lightweight daily monitoring dashboard.
 
 ### 1. Install dependencies
 ```bash
-pip install numpy pandas yfinance scipy scikit-learn statsmodels matplotlib tabulate
+pip install numpy pandas yfinance scipy scikit-learn statsmodels matplotlib tabulate fastparquet
 ```
+*Note: `fastparquet` or `pyarrow` is strictly required for the Parquet-based caching system.*
 
-### 2. Optimize parameters for all markets
-```bash
-python multi_market_runner.py
-```
-This will run parameter optimization, backtesting, and generate `multi_market_report.html`.
-
-### 3. Run daily monitoring (run each morning)
+### 2. Daily Workflow (Run each morning)
+Run the monitoring dashboard daily. The system operates in **incremental mode**, pulling only the missing dates, appending to the Parquet cache, and instantly outputting the risk dashboard.
 ```bash
 python daily_monitor.py
 ```
-Opens `daily_risk_summary.html` with today's global risk readings.
+Outputs: `daily_risk_summary.html` with today's severity readings across all markets.
+
+### 3. Full Re-run / Setup Workflow (Run monthly or on setup)
+To re-optimize parameters across all markets and run a complete historical backtest, forcefully recomputing everything from scratch, use the `--full-recompute` flag.
+
+First, run the engine to compute and cache the signals:
+```bash
+python multi_market_engine.py --full-recompute --end 2026-03-21
+```
+*Note: Without `--full-recompute`, the engine also uses the fast incremental cache. Full recomputes can take tens of minutes.*
+
+Next, generate the reports instantly from the newly cached signals:
+```bash
+python multi_market_analytics.py --end 2026-03-21
+```
 
 ### 4. Run standalone optimizer for a single market
 ```bash
-python self_optimizer.py --market ^GSPC --start 2018-01-01 --end 2026-01-01
+python self_optimizer.py --market ^GSPC --start 2018-01-01 --end 2026-03-21
 ```
 
 ---
@@ -147,7 +162,8 @@ python self_optimizer.py --market ^GSPC --start 2018-01-01 --end 2026-01-01
 | File | Description |
 |---|---|
 | `optimized_params.json` | Best KJ + KL parameters per market |
-| `multi_market_report.html` | Full HTML backtest report with regressions, hit rates, and drawdown analysis |
+| `cache/` | Parquet data files storing daily signal histories per market, strictly tied to optimized parameters |
+| `multi_market_report.html` | Full HTML backtest report with regressions, hit rates, scatter plots, and drawdown analysis |
 | `multi_market_report.md` | Markdown version of the backtest report |
 | `daily_risk_summary.html` | Daily risk dashboard with severity ratings and factor attribution |
 | `export_img/*.png` | Time-series charts per market with red-shaded high-risk zones |

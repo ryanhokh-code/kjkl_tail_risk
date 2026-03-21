@@ -4,12 +4,10 @@ import json
 import os
 from datetime import datetime, timedelta
 import yfinance as yf
-from self_optimizer import MARKET_UNIVERSES, generate_default_market_tickers
+from config import MARKET_UNIVERSES, generate_default_market_tickers, PARAM_FILE
 from backtest_tail_risk_daily import TailRiskBacktester
 import warnings
 warnings.filterwarnings("ignore")
-
-PARAM_FILE = 'optimized_params.json'
 
 def get_severity_rating(percentile):
     if percentile > 99:
@@ -87,7 +85,7 @@ def main():
         
         if 'KJ_Lambda' in all_params[market]:
             try:
-                lambdas = bt.compute_daily_kj_lambda()
+                lambdas = bt.compute_daily_kj_lambda(mode='incremental')
                 if not lambdas.empty:
                     latest_kj = np.round(lambdas.iloc[-1], 4)
                     # Compute historical percentile (0 to 100)
@@ -99,7 +97,7 @@ def main():
 
         if 'KL_MEES' in all_params[market]:
             try:
-                mees_vals = bt.compute_daily_kl_mees()
+                mees_vals = bt.compute_daily_kl_mees(mode='incremental')
                 if not mees_vals.empty:
                     latest_kl = np.round(mees_vals.iloc[-1], 4)
                     pct_kl = np.round((mees_vals <= latest_kl).mean() * 100, 2)

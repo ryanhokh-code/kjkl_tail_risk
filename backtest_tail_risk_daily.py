@@ -4,6 +4,8 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from kl_tail_risk_measure import KLTailRiskAnalysis
+from config import MARKET_UNIVERSES, CACHE_DIR
+import os
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -12,14 +14,7 @@ class TailRiskBacktester:
     def __init__(self, tickers=None, market_ticker='^GSPC', start_date="2020-01-01", 
                  end_date="2024-01-01", horizons=None, load_optimized_params=True):
         if tickers is None:
-            self.tickers = [
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-                'JPM', 'V', 'MA', 'BAC', 'GS', 'MS', 'WFC', 'C',
-                'LLY', 'JNJ', 'PFE', 'ABBV', 'MRK', 'TMO', 'UNH',
-                'WMT', 'PG', 'KO', 'PEP', 'COST', 'T', 'VZ',
-                'DIS', 'NFLX', 'XOM', 'CVX', 'AVGO', 'AMD', 'ORCL', 'CRM',
-                'INTC', 'HD', 'BA'
-            ]
+            self.tickers = MARKET_UNIVERSES['^GSPC']['tickers']
         else:
             self.tickers = tickers
             
@@ -82,15 +77,82 @@ class TailRiskBacktester:
         self.market_prices = market_prices.loc[common_idx]
         self.data = data
 
-    def compute_daily_kj_lambda(self, window=None, quantile=None):
+    def _cache_path(self, signal_name, params_dict=None):
+        """Returns the file path for the parquet cache of a given signal with param fingerprint."""
+        # Sanitize market ticker for filename
+        mkt_safe = self.market_ticker.replace('^', '')
+        dir_path = os.path.join(CACHE_DIR, mkt_safe)
+        os.makedirs(dir_path, exist_ok=True)
+        
+        if params_dict:
+            # Create a sorted string of parameters for the filename
+            # Filter out non-numeric/string values if any
+            param_parts = []
+            for k in sorted(params_dict.keys()):
+                v = params_dict[k]
+                param_parts.append(f"{k}{v}")
+            param_str = "_".join(param_parts)
+            filename = f"{signal_name}_{param_str}.parquet"
+        else:
+            filename = f"{signal_name}.parquet"
+            
+        return os.path.join(dir_path, filename)
+
+    def _load_cache(self, signal_name, params_dict=None):
+        """Loads cached signal series from Parquet if it exists."""
+        cache_file = self._cache_path(signal_name, params_dict)
+        if os.path.exists(cache_file):
+            try:
+                df = pd.read_parquet(cache_file)
+                # Ensure index is datetime objects
+                df.index = pd.to_datetime(df.index)
+                series = df.iloc[:, 0] # Take first column
+                # Fix pandas losing series name when saved as single-col dataframe
+                series.name = "KJ_Lambda" if "kj" in signal_name.lower() else "KL_MEES"
+                return series
+            except Exception as e:
+                print(f"Warning: Failed to load cache from {cache_file}: {e}")
+        return None
+
+    def _save_cache(self, signal_name, series, params_dict=None):
+        """Saves signal series to Parquet cache."""
+        cache_file = self._cache_path(signal_name, params_dict)
+        try:
+            df = pd.DataFrame({series.name if series.name else signal_name: series})
+            # Exclude timezone info for saving to avoid parquet issues if mixed
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+            df.to_parquet(cache_file)
+            print(f"Saved {len(series)} dates to cache: {cache_file}")
+        except Exception as e:
+            print(f"Warning: Failed to save cache to {cache_file}: {e}")
+
+    def compute_daily_kj_lambda(self, window=None, quantile=None, mode='full'):
         if window is None: window = self.params['KJ_Lambda']['window']
         if quantile is None: quantile = self.params['KJ_Lambda']['quantile']
+        
+        # Fingerprint for cache
+        p_dict = {'w': window, 'q': quantile}
         
         if self.stock_returns is None:
             self.fetch_data()
             
-        print("Computing daily rolling KJ Lambda (trailing window)...")
-        lambdas = pd.Series(index=self.stock_returns.index, dtype=float, name="KJ_Lambda")
+        print(f"Computing daily rolling KJ Lambda (mode={mode}, window={window}, quantile={quantile})...")
+        
+        cached_series = None
+        eval_dates = self.stock_returns.index[window:]
+        
+        if mode == 'incremental':
+            cached_series = self._load_cache("kj_lambda", params_dict=p_dict)
+            if cached_series is not None:
+                # Find dates in eval_dates that are NOT in cached_series
+                missing_dates = eval_dates.difference(cached_series.index)
+                if len(missing_dates) == 0:
+                    print(f"  -> All dates already cached for KJ Lambda (w={window}, q={quantile}).")
+                    return cached_series
+                print(f"  -> Found {len(cached_series)} cached dates. Computing {len(missing_dates)} missing dates.")
+                eval_dates = missing_dates
+        
+        lambdas = pd.Series(index=eval_dates, dtype=float, name="KJ_Lambda")
         
         # Calculate rolling market variance
         market_var = self.market_returns.rolling(window).var()
@@ -111,7 +173,8 @@ class TailRiskBacktester:
         residuals = self.stock_returns - (shifted_intercepts + shifted_betas.multiply(self.market_returns, axis=0))
         
         # Kelly-Jiang Lambda estimation
-        for i in range(window, len(residuals)):
+        for date in eval_dates:
+            i = self.stock_returns.index.get_loc(date)
             # Pool trailing window residuals
             window_res = residuals.iloc[i-window+1:i+1].values.flatten()
             window_res = window_res[~np.isnan(window_res)]
@@ -124,19 +187,47 @@ class TailRiskBacktester:
             
             if len(exceedances) > 0:
                 lambda_val = np.mean(np.log(np.abs(exceedances) / np.abs(u_t)))
-                lambdas.iloc[i] = lambda_val
+                lambdas.loc[date] = lambda_val
                 
-        return lambdas.dropna()
+        lambdas = lambdas.dropna()
+        
+        if mode == 'incremental' and cached_series is not None:
+            full_series = pd.concat([cached_series, lambdas]).sort_index()
+            # Drop duplicates keeping the newly computed one
+            full_series = full_series[~full_series.index.duplicated(keep='last')]
+        else:
+            full_series = lambdas
+            
+        self._save_cache("kj_lambda", full_series, params_dict=p_dict)
+        return full_series
 
-    def compute_daily_kl_mees(self, window=None, n_pca=None, alpha=None):
+    def compute_daily_kl_mees(self, window=None, n_pca=None, alpha=None, mode='full'):
         if window is None: window = self.params.get('KL_MEES', {}).get('window', 30)
         if n_pca is None: n_pca = self.params.get('KL_MEES', {}).get('n_pca', 4)
         if alpha is None: alpha = self.params.get('KL_MEES', {}).get('alpha', 0.10)
         
+        p_dict = {'w': window, 'n': n_pca, 'a': alpha}
+        
         if self.stock_returns is None:
             self.fetch_data()
 
-        print("Computing daily rolling KL MEES...")
+        print(f"Computing daily rolling KL MEES (mode={mode}, window={window}, n_pca={n_pca}, alpha={alpha})...")
+        
+        cached_series = None
+        eval_dates = self.stock_returns.index[window:]
+        
+        if mode == 'incremental':
+            cached_series = self._load_cache("kl_mees", params_dict=p_dict)
+            if cached_series is not None:
+                missing_dates = eval_dates.difference(cached_series.index)
+                if len(missing_dates) == 0:
+                    print(f"  -> All dates already cached for KL MEES (w={window}, n={n_pca}, a={alpha}).")
+                    # Still need to init latest_kl_loadings empty so it doesn't break daily monitor attribution
+                    self.latest_kl_loadings = {}
+                    return cached_series
+                print(f"  -> Found {len(cached_series)} cached dates. Computing {len(missing_dates)} missing dates.")
+                eval_dates = missing_dates
+                
         # Use KLTailRiskAnalysis for its PCA/MEES math – no data fetching needed
         analyzer = KLTailRiskAnalysis(
             tickers=self.tickers,
@@ -148,7 +239,6 @@ class TailRiskBacktester:
             alpha=alpha,
         )
 
-        eval_dates = self.stock_returns.index[window:]
         mees_daily = pd.Series(index=eval_dates, dtype=float, name="KL_MEES")
         daily_loadings = {}
 
@@ -164,7 +254,16 @@ class TailRiskBacktester:
                 daily_loadings[date] = pca_loadings
 
         self.latest_kl_loadings = daily_loadings
-        return mees_daily.dropna()
+        mees_daily = mees_daily.dropna()
+        
+        if mode == 'incremental' and cached_series is not None:
+            full_series = pd.concat([cached_series, mees_daily]).sort_index()
+            full_series = full_series[~full_series.index.duplicated(keep='last')]
+        else:
+            full_series = mees_daily
+            
+        self._save_cache("kl_mees", full_series, params_dict=p_dict)
+        return full_series
 
     def prepare_forward_returns(self):
         """Build forward return, vol-ratio, and max-drawdown DataFrames. Must be called after fetch_data()."""
@@ -194,9 +293,9 @@ class TailRiskBacktester:
             max_dd = rolling_min / self.market_prices - 1
             self.fwd_max_drawdown[f"MaxDD_{h}d"] = max_dd
 
-    def generate_signals(self):
-        kj_lambda = self.compute_daily_kj_lambda()
-        kl_mees = self.compute_daily_kl_mees()
+    def generate_signals(self, mode='full'):
+        kj_lambda = self.compute_daily_kj_lambda(mode=mode)
+        kl_mees = self.compute_daily_kl_mees(mode=mode)
         self.signals = pd.concat([kj_lambda, kl_mees], axis=1).dropna()
         print(f"Generated {len(self.signals)} days of overlapping signals.")
 
@@ -540,6 +639,186 @@ class TailRiskBacktester:
         plt.savefig(save_path, bbox_inches='tight', dpi=120)
         plt.close(fig)
         print(f"Saved scatter plots to '{save_path}'.")
+        return save_path
+
+    def compute_alert_distribution_stats(self, measure_col='KJ_Lambda'):
+        """
+        Groups Target Variables (Returns, VolRatio, MaxDD) into Alert Levels:
+        Normal (<=90th), Elevated (90-95th), High (95-99th), Extreme (>99th).
+        Returns a dict of DataFrames, one for each horizon.
+        """
+        if self.signals is None or self.fwd_returns is None:
+            return {}
+
+        if measure_col not in self.signals:
+            return {}
+
+        common_index = (
+            self.signals.index
+            .intersection(self.fwd_returns.index)
+            .intersection(self.fwd_vol_ratios.index)
+            .intersection(self.fwd_max_drawdown.index)
+        )
+        if len(common_index) == 0:
+            return {}
+
+        signal = self.signals.loc[common_index, measure_col].dropna()
+        if len(signal) == 0:
+            return {}
+            
+        p90 = np.percentile(signal, 90)
+        p95 = np.percentile(signal, 95)
+        p99 = np.percentile(signal, 99)
+
+        labels = []
+        for val in signal:
+            if val <= p90:
+                labels.append('1-Normal (<=90%)')
+            elif val <= p95:
+                labels.append('2-Elevated (90-95%)')
+            elif val <= p99:
+                labels.append('3-High (95-99%)')
+            else:
+                labels.append('4-Extreme (>99%)')
+                
+        alert_series = pd.Series(labels, index=signal.index)
+
+        stats_by_horizon = {}
+        for h in self.horizons:
+            df = pd.DataFrame({
+                'Alert Level': alert_series,
+                'Return (%)': self.fwd_returns.loc[signal.index, f"Return_{h}d"] * 100,
+                'VolRatio': self.fwd_vol_ratios.loc[signal.index, f"VolRatio_{h}d"],
+                'MaxDD (%)': self.fwd_max_drawdown.loc[signal.index, f"MaxDD_{h}d"] * 100
+            }).dropna()
+
+            if df.empty:
+                continue
+
+            groups = df.groupby('Alert Level')
+            target_dfs = {}
+            for target in ['Return (%)', 'VolRatio', 'MaxDD (%)']:
+                stats = groups[target].agg(
+                    N=('count'), 
+                    Mean=('mean'), 
+                    Median=('median'), 
+                    Min=('min'), 
+                    Max=('max'), 
+                    Pct5=(lambda x: x.quantile(0.05)),
+                    Pct95=(lambda x: x.quantile(0.95))
+                ).round(2)
+                stats = stats.rename(columns={'Pct5': '5th Pct', 'Pct95': '95th Pct'})
+                target_dfs[target] = stats
+                
+            stats_by_horizon[h] = target_dfs
+
+        return stats_by_horizon
+
+    def generate_alert_distribution_plots(self, measure_col='KJ_Lambda', save_path=None):
+        if self.signals is None or self.fwd_returns is None:
+            return None
+
+        if measure_col not in self.signals:
+            return None
+            
+        if save_path is None:
+            tag = self.market_ticker.replace('^', '')
+            save_path = f"export_img/alert_dist_{measure_col}_{tag}.png"
+
+        common_index = (
+            self.signals.index
+            .intersection(self.fwd_returns.index)
+            .intersection(self.fwd_vol_ratios.index)
+            .intersection(self.fwd_max_drawdown.index)
+        )
+        if len(common_index) == 0:
+            return None
+
+        signal = self.signals.loc[common_index, measure_col].dropna()
+        if len(signal) == 0:
+            return None
+            
+        p90 = np.percentile(signal, 90)
+        p95 = np.percentile(signal, 95)
+        p99 = np.percentile(signal, 99)
+
+        labels = []
+        for val in signal:
+            if val <= p90:
+                labels.append('Normal')
+            elif val <= p95:
+                labels.append('Elevated')
+            elif val <= p99:
+                labels.append('High')
+            else:
+                labels.append('Extreme')
+        
+        alert_series = pd.Series(labels, index=signal.index)
+        order = ['Normal', 'Elevated', 'High', 'Extreme']
+        
+        targets = [
+            ('Forward Return (%)', self.fwd_returns, 'Return_{}d', 100.0),
+            ('Forward Vol Ratio', self.fwd_vol_ratios, 'VolRatio_{}d', 1.0),
+            ('Forward Max Drawdown (%)', self.fwd_max_drawdown, 'MaxDD_{}d', 100.0),
+        ]
+        n_rows = len(targets)
+        n_horizons = len(self.horizons)
+
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(n_rows, n_horizons, figsize=(4.5 * n_horizons, 4 * n_rows))
+        fig.suptitle(f"{self.market_ticker} — {measure_col} Alert Level Distributions", fontsize=15, fontweight='bold', y=1.02)
+        
+        colors = ['#2ca02c', '#ff7f0e', '#d62728', '#9467bd'] # Green, Orange, Red, Purple
+
+        for row_idx, (row_label, fwd_df, col_tpl, scale) in enumerate(targets):
+            for col_idx, h in enumerate(self.horizons):
+                if n_rows == 1 and n_horizons == 1:
+                    ax = axes
+                elif n_rows == 1:
+                    ax = axes[col_idx]
+                elif n_horizons == 1:
+                    ax = axes[row_idx]
+                else:
+                    ax = axes[row_idx, col_idx]
+                    
+                col_name = col_tpl.format(h)
+                
+                df = pd.DataFrame({'Alert': alert_series, 'Value': fwd_df.loc[signal.index, col_name] * scale}).dropna()
+                
+                box_data = []
+                valid_orders = []
+                valid_colors = []
+                for cat, color in zip(order, colors):
+                    vals = df[df['Alert'] == cat]['Value'].values
+                    if len(vals) > 0:
+                        box_data.append(vals)
+                        valid_orders.append(cat)
+                        valid_colors.append(color)
+                
+                if not box_data:
+                    ax.set_visible(False)
+                    continue
+                    
+                bplot = ax.boxplot(box_data, patch_artist=True, tick_labels=valid_orders, showfliers=False)
+                
+                for patch, color in zip(bplot['boxes'], valid_colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.6)
+                for median in bplot['medians']:
+                    median.set_color('black')
+                    median.set_linewidth(1.5)
+                    
+                ax.axhline(0, color='grey', linestyle='--', linewidth=1)
+                ax.set_title(f'{row_label} ({h}d)', fontsize=10)
+                ax.tick_params(axis='x', rotation=45, labelsize=9)
+                ax.tick_params(axis='y', labelsize=8)
+                
+        plt.tight_layout()
+        import os
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=120)
+        plt.close(fig)
+        print(f"Saved alert distributions to '{save_path}'.")
         return save_path
 
     def run_full_analysis(self):

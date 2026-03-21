@@ -6,6 +6,7 @@ from sklearn.decomposition import PCA
 import statsmodels.api as sm
 from scipy.stats import ttest_ind
 import matplotlib.pyplot as plt
+from config import MARKET_UNIVERSES
 import warnings
 
 # Suppress warnings for cleaner console output
@@ -17,13 +18,7 @@ class KLTailRiskAnalysis:
                  enable_pca=True, pca_variance=0.90, target_portfolios=4,
                  window=30, n_pca=None, alpha=0.10):
         if tickers is None:
-            self.tickers = [
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-                'JPM', 'V', 'MA', 'BAC', 'GS', 'LLY', 'JNJ', 'PFE', 'WMT',
-                'PG', 'KO', 'DIS', 'NFLX', 'XOM', 'CVX', 'AVGO', 'AMD',
-                'ORCL', 'CRM', 'INTC', 'BRK-B', 'HD', 'MCD', 'CAT', 'GE',
-                'BA', 'T', 'VZ', 'CSCO', 'ABT', 'PEP', 'COST', 'MRK'
-            ]
+            self.tickers = MARKET_UNIVERSES['^GSPC']['tickers']
         else:
             self.tickers = tickers
             

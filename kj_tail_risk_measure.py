@@ -139,15 +139,8 @@ class TailRiskAnalyzer:
 
 # 3. EXECUTION FLOW
 if __name__ == "__main__":
-    # Define Mag7 + others for a robust cross-section (total 40)
-    tickers = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-        'JPM', 'V', 'MA', 'BAC', 'GS', 'MS', 'WFC', 'C',
-        'LLY', 'JNJ', 'PFE', 'ABBV', 'MRK', 'TMO', 'UNH',
-        'WMT', 'PG', 'KO', 'PEP', 'COST', 'T', 'VZ',
-        'DIS', 'NFLX', 'XOM', 'CVX', 'AVGO', 'AMD', 'ORCL', 'CRM',
-        'INTC', 'HD', 'BA'
-    ]
+    from config import MARKET_UNIVERSES
+    tickers = MARKET_UNIVERSES['^GSPC']['tickers']
 
     # Step 1: Data Fetching
     daily_returns, mkt_returns = fetch_financial_data(tickers)
