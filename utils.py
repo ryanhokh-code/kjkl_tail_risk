@@ -11,6 +11,11 @@ try:
 except ImportError:
     create_engine = None
 
+try:
+    from sklearn.metrics import roc_auc_score
+except ImportError:
+    roc_auc_score = None
+
 # =============================================================================
 # DATA FETCHING
 # =============================================================================
@@ -347,3 +352,36 @@ def calculate_accuracy_metrics(signal_series, price_series, threshold_pct=90, ho
         'fp': int(fp),
         'fn': int(fn)
     }
+
+def calculate_roc_auc(signal_series, price_series, horizon=21, drawdown_threshold=-0.03):
+    """
+    Calculates the ROC-AUC score for the signal.
+    """
+    if roc_auc_score is None:
+        print("Warning: scikit-learn not installed. Skipping ROC-AUC.")
+        return np.nan
+        
+    if signal_series.empty or price_series.empty:
+        return np.nan
+
+    common_idx = signal_series.index.intersection(price_series.index)
+    sig = signal_series.loc[common_idx]
+    price = price_series.loc[common_idx]
+    
+    # Define binary labels for crashes
+    fwd_min_ret = []
+    for i in range(len(price)):
+        window = price.iloc[i:i+horizon+1]
+        if len(window) < 2:
+            fwd_min_ret.append(np.nan)
+        else:
+            ret_from_start = window / window.iloc[0] - 1
+            fwd_min_ret.append(1 if ret_from_start.min() <= drawdown_threshold else 0)
+    
+    labels = pd.Series(fwd_min_ret, index=price.index).dropna()
+    common_valid = labels.index.intersection(sig.index)
+    
+    if len(labels.loc[common_valid].unique()) < 2:
+        return np.nan
+        
+    return roc_auc_score(labels.loc[common_valid], sig.loc[common_valid])
